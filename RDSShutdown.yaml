@@ -1,0 +1,74 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create Lambda function that shutsdown RDS instances
+Resources:
+  RDSShutdownFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Shutdown running RDS instances daily 
+      Code:
+        ZipFile: |
+          from boto3 import client
+
+          def get_running_instances(rds):
+              instanceList = []
+              rdsInstances = rds.describe_db_instances()
+              for rdsInstance in rdsInstances["DBInstances"]:
+                  if rdsInstance["DBInstanceStatus"] == "available":
+                      instanceList.append(rdsInstance)
+              return instanceList
+
+          def lambda_handler(event, context):
+              rds = client("rds", region_name=event["region"])
+              instances = get_running_instances(rds)
+              if instances:
+                  for instance in instances:
+                      print("Stopping {}".format(instance["DBInstanceIdentifier"]))
+                      rds.stop_db_instance(DBInstanceIdentifier=instance["DBInstanceIdentifier"])
+              else:
+                  print("No running RDS instances found in {}".format(event["region"]))
+      Handler: index.lambda_handler
+      Role: !GetAtt RDSShutdownFunctionExecutionRole.Arn
+      Runtime: python3.6
+      Timeout: '60'
+  RDSShutdownFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - rds:DescribeDBInstances
+            - rds:StopDBInstance
+            Resource: '*'
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RDSShutdownFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RDSShutdownRule.Arn
+  RDSShutdownRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Call RDS Shutdown Function everyday at 9pm Mountain
+      ScheduleExpression: cron(0 3 ? * * *)
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt RDSShutdownFunction.Arn
+        Id: RDSShutdownFunction
